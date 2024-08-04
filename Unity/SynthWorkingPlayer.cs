@@ -48,6 +48,10 @@ public class SynthWorkingPlayer : MonoBehaviour
     public Color primaryColor = Color.white;
     [Range(0, 1)] public float colorVariance = 0.1f;
 
+    // New fields for auto play
+    public bool autoPlay = false;
+    public float autoPlayDelay = 2.0f;
+
     private float[] eventTimes;
     private int nextEventIndex = 0;
     private float elapsedTime = 0f;
@@ -85,6 +89,11 @@ public class SynthWorkingPlayer : MonoBehaviour
                 }
             }
             Play();
+        }
+        // Start auto play if enabled
+        if (autoPlay)
+        {
+            StartCoroutine(AutoPlayPresets());
         }
 
     }
@@ -143,6 +152,7 @@ public class SynthWorkingPlayer : MonoBehaviour
             }
         }
     }
+
     void CalculateEventTimes()
     {
         eventTimes = new float[numberOfEvents];
@@ -159,7 +169,9 @@ public class SynthWorkingPlayer : MonoBehaviour
     private void LoadCSV(CSVFile csvFile)
     {
         if (string.IsNullOrEmpty(csvFile.fileName))
-        { return; }
+        {
+            return;
+        }
         string filePath = Path.Combine(Application.streamingAssetsPath, csvFile.fileName);
         if (!File.Exists(filePath))
         {
@@ -175,15 +187,19 @@ public class SynthWorkingPlayer : MonoBehaviour
         }
         ReadCSV(filePath, csvFile);
         csvFile.loaded = true;
+        csvFile.loadNow = true; // Marque le fichier comme chargé
         SendValuesToWwise(csvFile);
 #if UNITY_EDITOR
         EditorUtility.SetDirty(this);
 #endif
     }
+
     private void LoadCSV2(CSVFile csvFile)
     {
         if (string.IsNullOrEmpty(csvFile.fileName))
-        { return; }
+        {
+            return;
+        }
         string filePath = Path.Combine(Application.streamingAssetsPath, csvFile.fileName);
         if (!File.Exists(filePath))
             foreach (CSVFile file in csvFiles)
@@ -197,36 +213,55 @@ public class SynthWorkingPlayer : MonoBehaviour
             }
         ReadCSV(filePath, csvFile);
         csvFile.loaded = true;
+        csvFile.loadNow = true; // Marque le fichier comme chargé
         SendValuesToWwise(csvFile);
 #if UNITY_EDITOR
         EditorUtility.SetDirty(this);
 #endif
     }
+
     private void ReadCSV(string filePath, CSVFile csvFile)
     {
+        var existingData = new HashSet<string>();
         string[] rows = File.ReadAllLines(filePath);
+
         foreach (string row in rows)
         {
             string[] columns = row.Split(',');
-            if (columns.Length == 5)
+            if (columns.Length >= 5) // Vérifier qu'il y a assez de colonnes
             {
-                CSVData data = new CSVData
-                {
-                    Parameter = columns[1].Trim(),
-                    MinRandomRange = float.Parse(columns[3].Trim(), CultureInfo.InvariantCulture),
-                    MaxRandomRange = float.Parse(columns[4].Trim(), CultureInfo.InvariantCulture)
-                };
-                float value;
+                string parameter = columns[1].Trim();
                 string valueStr = columns[2].Trim();
-                if (valueStr == "0.000000") { value = 0.0f; }
-                else if (float.TryParse(valueStr, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                float minRandomRange = float.Parse(columns[3].Trim(), CultureInfo.InvariantCulture);
+                float maxRandomRange = float.Parse(columns[4].Trim(), CultureInfo.InvariantCulture);
+
+                // Utiliser une clé unique pour vérifier les doublons
+                string uniqueKey = $"{parameter}-{valueStr}-{minRandomRange}-{maxRandomRange}";
+
+                if (!existingData.Contains(uniqueKey) && float.TryParse(valueStr, NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
                 {
-                    data.Value = value;
+                    existingData.Add(uniqueKey); // Ajouter la clé unique
+                    CSVData data = new CSVData
+                    {
+                        Parameter = parameter,
+                        Value = value,
+                        MinRandomRange = minRandomRange,
+                        MaxRandomRange = maxRandomRange
+                    };
                     csvFile.data.Add(data);
                 }
+                else if (enableDebugLogs)
+                {
+                    Debug.LogWarning($"Ligne dupliquée ou incorrecte ignorée: {row}");
+                }
+            }
+            else if (enableDebugLogs)
+            {
+                Debug.LogWarning($"Format inattendu ou ligne incomplète: {row}");
             }
         }
     }
+
     private void ProcessCSV(string csvText)
     {
         string[] lines = csvText.Split('\n');
@@ -354,6 +389,8 @@ public class SynthWorkingPlayer : MonoBehaviour
             AkSoundEngine.SetRTPCValue(data.Parameter, float.Parse(formattedValue, CultureInfo.InvariantCulture));
         }
     }
+
+
     private void ChangeCameraBackgroundColor()
     {
         if (mainCamera != null)
@@ -536,6 +573,24 @@ public class SynthWorkingPlayer : MonoBehaviour
             if (enableDebugLogs) Debug.Log($"Final RTPC Value: {currentRTPCValue2}");
         }
     }
+    IEnumerator AutoPlayPresets()
+    {
+        while (true)
+        {
+            foreach (CSVFile file in csvFiles)
+            {
+                // Déselectionnez les autres fichiers avant de charger un nouveau preset
+                DeselectOtherFiles(file);
+
+                // Chargez et jouez le nouveau fichier
+                LoadCSV(file);
+
+                // Attendre avant de passer au preset suivant
+                yield return new WaitForSeconds(autoPlayDelay);
+            }
+        }
+    }
+
     private Color GetRandomColorAroundPrimary(Color primary, float variance)
     {
         float r = Mathf.Clamp01(primary.r + Random.Range(-variance, variance));
@@ -557,6 +612,8 @@ public class SynthWorkingPlayer : MonoBehaviour
         nextEventIndex = 0;
         elapsedTime = 0f;
         //shapeGenerator.DestroyPreviousShape();
+        CalculateEventTimes();
+        isPlaying = true;
 
     }
     [ContextMenu("Stop")]
